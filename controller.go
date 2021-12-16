@@ -1,10 +1,13 @@
 package main
 
 import (
+	"context"
 	"fmt"
+	"os"
 	"sync"
 	"time"
 
+	"github.com/fatih/color"
 	"k8s.io/client-go/kubernetes"
 
 	v1 "k8s.io/api/core/v1"
@@ -46,18 +49,21 @@ type Controller struct {
 	client    kubernetes.Interface
 	tailers   map[string]*ContainerTailer
 	callbacks Callbacks
+	context   context.Context
 	sync.Mutex
 }
 
 func NewController(
 	client kubernetes.Interface,
 	options ControllerOptions,
+	ctx context.Context,
 	callbacks Callbacks) *Controller {
 	return &Controller{
 		ControllerOptions: options,
 		client:            client,
 		tailers:           map[string]*ContainerTailer{},
 		callbacks:         callbacks,
+		context:           ctx,
 	}
 }
 
@@ -192,10 +198,12 @@ func (ctl *Controller) shouldIncludeContainer(pod *v1.Pod, container *v1.Contain
 }
 
 func (ctl *Controller) addContainer(pod *v1.Pod, container *v1.Container, initialAdd bool) {
+	yellow := color.New(color.FgYellow)
 	ctl.Lock()
 	defer ctl.Unlock()
 
 	key := buildKey(pod, container)
+	yellow.Fprintf(os.Stderr, "addContainer: %s\n", key)
 	if _, ok := ctl.tailers[key]; ok {
 		return
 	}
@@ -216,7 +224,7 @@ func (ctl *Controller) addContainer(pod *v1.Pod, container *v1.Container, initia
 	ctl.tailers[key] = tailer
 
 	go func() {
-		tailer.Run(func(err error) {
+		tailer.Run(ctl.context, func(err error) {
 			ctl.callbacks.OnError(&targetPod, &targetContainer, err)
 		})
 	}()
@@ -266,7 +274,7 @@ func (ctl *Controller) getStartTimestamp(
 }
 
 func buildKey(pod *v1.Pod, container *v1.Container) string {
-	return fmt.Sprintf("%s/%s/%s", pod.Namespace, pod.Name, findContainerID(pod, container))
+	return fmt.Sprintf("%s/%s", pod.Namespace, pod.Name)
 }
 
 func findContainerID(pod *v1.Pod, container *v1.Container) string {
